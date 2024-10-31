@@ -1,0 +1,14 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[context.production.environment]
+  NODE_VERSION = "20"  # Sesuaikan dengan versi node yang lo butuhin
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
