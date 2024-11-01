@@ -1,6 +1,39 @@
 import { NextResponse } from 'next/server'
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai'
 
+// Type definitions for Gemini AI responses
+interface GroundingSource {
+  title?: string
+  snippet?: string
+  url?: string
+  score?: number
+}
+
+interface GroundingMetadata {
+  sources: GroundingSource[]
+}
+
+interface GeminiResponse {
+  text: () => string
+  groundingMetadata?: GroundingMetadata
+}
+
+interface GenerativeModel {
+  generateContent: (
+    prompt: string | GenerationPrompt
+  ) => Promise<{ response: GeminiResponse }>
+}
+
+interface GenerationPrompt {
+  contents: string
+  tools?: string[]
+  generationConfig?: {
+    temperature?: number
+    topK?: number
+    topP?: number
+  }
+}
+
 // Initialize Gemini AI with error handling
 const initializeGeminiAI = () => {
   const apiKey = process.env.GOOGLE_API_KEY
@@ -45,7 +78,7 @@ const contentTypes = {
 } as const
 
 // Model configuration
-const getModel = (genAI: GoogleGenerativeAI) => {
+const getModel = (genAI: GoogleGenerativeAI): GenerativeModel => {
   return genAI.getGenerativeModel({
     model: 'gemini-1.5-flash',
     generationConfig: {
@@ -76,7 +109,7 @@ const getModel = (genAI: GoogleGenerativeAI) => {
 }
 
 // Clean and format the generated script
-function cleanScript(script: string) {
+function cleanScript(script: string): string {
   return script
     .replace(/[*#]/g, '')
     .replace(/\n{3,}/g, '\n\n')
@@ -86,26 +119,25 @@ function cleanScript(script: string) {
 
 // Function to get grounded content using search
 async function getGroundedContent(
-  model: any,
+  model: GenerativeModel,
   title: string,
   contentType: keyof typeof contentTypes
-) {
+): Promise<GroundingSource[]> {
   const searchQueries = contentTypes[contentType].searchKeywords(title)
   
   try {
-    // Generate grounding content using search
-    const groundingPrompt = {
+    const groundingPrompt: GenerationPrompt = {
       contents: searchQueries.join(' AND '),
       tools: ['google_search_retrieval'],
       generationConfig: {
-        temperature: 0.1, // Lower temperature for factual search
+        temperature: 0.1,
         topK: 32,
         topP: 0.8,
       }
     }
 
     const groundingResponse = await model.generateContent(groundingPrompt)
-    return groundingResponse?.groundingMetadata?.sources || []
+    return groundingResponse.response.groundingMetadata?.sources || []
     
   } catch (error) {
     console.error('Error getting grounded content:', error)
@@ -115,19 +147,17 @@ async function getGroundedContent(
 
 // Generate enhanced prompt with grounding
 async function generatePrompt(
-  model: any,
+  model: GenerativeModel,
   title: string,
   reason: string,
   contentType: keyof typeof contentTypes
-) {
-  // Get grounded content
+): Promise<string> {
   const groundedSources = await getGroundedContent(model, title, contentType)
   const typeInfo = contentTypes[contentType]
   
-  // Extract relevant information from grounded sources
   const groundedInfo = groundedSources.length > 0
     ? `\nGrounded Facts:\n${groundedSources
-        .map((source: any) => `- ${source.snippet || source.title}`)
+        .map(source => `- ${source.snippet || source.title}`)
         .join('\n')}`
     : ''
 
@@ -157,40 +187,56 @@ async function generatePrompt(
     PENTING: Selalu sisipkan fakta-fakta dari Grounded Facts dalam cara yang natural.`
 }
 
-// Type definitions
+// Type definitions for request/response
 type ContentType = keyof typeof contentTypes
+
 interface RequestBody {
   title: string
   reason: string
   contentType: ContentType
 }
 
+interface ResponseMetadata {
+  contentType: ContentType
+  timestamp: string
+  hasGrounding: boolean
+  groundingSources: GroundingSource[]
+}
+
+interface SuccessResponse {
+  success: true
+  script: string
+  metadata: ResponseMetadata
+}
+
+interface ErrorResponse {
+  success: false
+  error: string
+}
+
 // Main API handler
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse<SuccessResponse | ErrorResponse>> {
   try {
-    // Initialize AI and validate request
     const genAI = initializeGeminiAI()
     const model = getModel(genAI)
     
-    // Parse and validate request body
     const body: RequestBody = await req.json()
     const { title, reason, contentType } = body
 
     if (!title || !reason || !contentType) {
-      return NextResponse.json(
-        { error: 'Missing required fields. Please provide title, reason, and contentType.' },
-        { status: 400 }
-      )
+      return NextResponse.json({
+        success: false,
+        error: 'Missing required fields. Please provide title, reason, and contentType.'
+      }, { status: 400 })
     }
 
     if (!(contentType in contentTypes)) {
-      return NextResponse.json(
-        { error: `Invalid content type. Supported types: ${Object.keys(contentTypes).join(', ')}` },
-        { status: 400 }
-      )
+      return NextResponse.json({
+        success: false,
+        error: `Invalid content type. Supported types: ${Object.keys(contentTypes).join(', ')}`
+      }, { status: 400 })
     }
 
-    // Generate grounded prompt and content
     const prompt = await generatePrompt(model, title, reason, contentType)
     const result = await model.generateContent(prompt)
     const response = result.response
@@ -208,7 +254,7 @@ export async function POST(req: Request) {
         contentType,
         timestamp: new Date().toISOString(),
         hasGrounding: true,
-        groundingSources: result.groundingMetadata?.sources || []
+        groundingSources: response.groundingMetadata?.sources || []
       }
     })
 
@@ -216,11 +262,10 @@ export async function POST(req: Request) {
     console.error('Error in content generation:', error)
     
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
-    const statusCode = error instanceof Error && error.message.includes('GOOGLE_API_KEY') ? 500 : 500
     
-    return NextResponse.json(
-      { success: false, error: errorMessage },
-      { status: statusCode }
-    )
+    return NextResponse.json({
+      success: false,
+      error: errorMessage
+    }, { status: 500 })
   }
 }
