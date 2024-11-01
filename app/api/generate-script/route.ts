@@ -73,8 +73,12 @@ export async function POST(req: Request) {
         console.log('Full response:', completion)
         
         // You can also access grounding metadata here
-        const groundingMetadata = await response.getGroundingMetadata()
-        console.log('Grounding Metadata:', groundingMetadata)
+        try {
+          const groundingMetadata = await response.getGroundingMetadata()
+          console.log('Grounding Metadata:', groundingMetadata)
+        } catch (error) {
+          console.error('Error getting grounding metadata:', error)
+        }
       },
     })
 
